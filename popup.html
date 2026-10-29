@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>YouTube 錄音控制</title>
+<style>
+:root{font-family:system-ui,"Microsoft JhengHei",sans-serif;color:#172b48;color-scheme:light}
+*{box-sizing:border-box}body{width:388px;max-width:100%;margin:0;background:#f2f5fa;font-size:13px;line-height:1.5}
+.header{padding:19px 18px 17px;color:#fff;background:linear-gradient(125deg,#102445,#244a78);display:flex;align-items:center;gap:12px}
+.logo{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;background:#ffffff1c;font-size:22px;box-shadow:inset 0 0 0 1px #ffffff30}
+.header h1{margin:0;font-size:16px;font-weight:750;letter-spacing:.1px}.header p{margin:2px 0 0;color:#c7d8ef;font-size:11px}
+.main{padding:14px;display:grid;gap:12px}.panel{background:#fff;border:1px solid #dde5ef;border-radius:15px;padding:15px;box-shadow:0 3px 12px #1c37510b;min-width:0}
+.section-title{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:760;margin:0 0 10px}.section-title .symbol{color:#427bb5;font-size:15px}
+.muted{color:#62748a;font-size:11.5px;overflow-wrap:anywhere;margin:6px 0 0}
+button{font:inherit;font-weight:650;border:1px solid transparent;border-radius:10px;padding:10px 12px;min-height:38px;background:#244b79;color:#fff;cursor:pointer;transition:background .16s,transform .12s,box-shadow .16s}
+button:hover:not(:disabled){filter:none;box-shadow:0 2px 7px #1d355014;background:#28517e}button.ghost:hover:not(:disabled){background:#e7eef8;color:#203f68;border-color:#d7e4f3;box-shadow:none}button.danger-ghost:hover:not(:disabled){background:#fce9e9;color:#a82d39;border-color:#f3d2d6;box-shadow:none}button.primary:hover:not(:disabled){background:linear-gradient(110deg,#cd3548,#ac1e32);box-shadow:0 4px 11px #d83a4b1b}button:active:not(:disabled){transform:translateY(1px)}button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #6aa7f0;outline-offset:2px}
+button:disabled{opacity:.48;cursor:not-allowed}.primary{display:block;width:100%;min-height:46px;border-radius:12px;font-size:14px;font-weight:800;background:linear-gradient(110deg,#d83a4b,#b82036);color:#fff;box-shadow:0 4px 12px #d83a4b24}
+.ghost{background:#f0f5fb;color:#234a77;border-color:#e1eaf5}.danger-ghost{background:#fff2f2;color:#af3540;border:1px solid #ffdddd}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.actions button{flex:1 1 auto}
+.actions .full,.full{width:100%;flex:1 1 100%}
+.template-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}.template-actions button{padding:9px 4px;min-width:0}.editor-actions{display:flex;gap:8px;margin-top:10px}.editor-actions button{flex:1}
+select,input,textarea{width:100%;font:inherit;color:#213754;background:#fff;border:1px solid #cad7e6;border-radius:9px;padding:10px;min-width:0}
+select{height:41px;white-space:nowrap;text-overflow:ellipsis}textarea{resize:vertical;min-height:130px}
+#state{font-size:14px;font-weight:750;color:#1b395c}#detail{margin-top:3px}#elapsed{font-variant-numeric:tabular-nums;font-weight:650;color:#365876}
+.metrics{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:11px 0 13px}.metric{background:#f5f8fc;border:1px solid #e9eff6;border-radius:9px;padding:9px 11px;min-width:0}.metric b{display:block;color:#687c90;font-size:10px;letter-spacing:.25px;margin-bottom:4px}meter{width:100%;height:10px;vertical-align:middle;accent-color:#2a8cb1}
+#message{color:#ae3542;white-space:pre-wrap;font-size:12px;margin-top:8px}#message:empty{display:none}
+.status-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.status-tag{font-size:10px;letter-spacing:.5px;background:#eaf6f2;color:#1d7d64;padding:4px 8px;border-radius:20px;font-weight:800}
+.section-divider{border:0;border-top:1px solid #edf0f5;margin:13px 0}.control-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.switch{position:relative;display:inline-flex;align-items:center;flex-shrink:0}.switch input{width:42px;height:24px;margin:0;appearance:none;background:#c8d3df;border-radius:99px;border:0;cursor:pointer;transition:background .15s}.switch input:checked{background:#2872b6}.switch input:after{content:'';position:absolute;width:18px;height:18px;background:white;border-radius:50%;top:3px;left:3px;box-shadow:0 1px 4px #0003;transition:transform .15s}.switch input:checked:after{transform:translateX(18px)}
+#templateEditor{margin-top:12px;padding-top:12px;border-top:1px solid #ebeff5}#templateEditor[hidden]{display:none}#templateName{margin-bottom:8px}
+#syncStatus,#chatInfo{font-size:11px}#recordings{display:flex;align-items:center;justify-content:center;gap:8px}.footer{font-size:10px;color:#8c9cad;text-align:center;padding:0 0 4px}
+</style></head><body>
+<header class="header"><div class="logo">🎙</div><div><h1>YouTube 音訊翻譯助手</h1><p>錄製分頁聲音 · 背景傳送 ChatGPT</p></div></header>
+<main class="main">
+<section class="panel"><div class="status-top"><div id="state">正在讀取狀態…</div><span class="status-tag">RECORDER</span></div><p class="muted" id="detail"></p>
+<div class="metrics"><div class="metric"><b>錄音時間</b><div id="elapsed">錄音時間：00:00</div></div><div class="metric"><b>即時音量</b><meter id="volume" min="0" max="1" value="0"></meter></div></div>
+<button id="toggle" class="primary" disabled>載入中…</button><div id="message" role="status"></div></section>
+<section class="panel"><h2 class="section-title"><span class="symbol">▤</span> 固定翻譯聊天室</h2><select id="chats" aria-label="選擇聊天室"></select><p class="muted" id="chatInfo"></p>
+<div class="actions"><button id="refreshAll" class="ghost full">↻ 同步標題與更新狀態</button></div><p id="syncStatus" class="muted" role="status">正在同步聊天室資訊…</p>
+<hr class="section-divider"><div class="actions"><button id="new" class="ghost">＋ 建立新聊天串</button><button id="open" class="ghost">↗ 檢視聊天室</button><button id="remove" class="danger-ghost full">移除目前選取的綁定</button></div>
+<p class="muted">移除僅取消本機綁定，不會刪除 ChatGPT 上的對話。</p></section>
+<section class="panel"><h2 class="section-title"><span class="symbol">✎</span> 翻譯提示詞範本</h2><select id="templates" aria-label="選擇提示詞範本"></select>
+<div class="template-actions"><button id="newTemplate" class="ghost">＋ 新增</button><button id="editTemplate" class="ghost">✎ 編輯</button><button id="deleteTemplate" class="danger-ghost">刪除</button></div>
+<div id="templateEditor" hidden><strong id="templateEditorHeading">新增提示詞範本</strong><p id="templateEditorHelp" class="muted"></p><input id="templateName" placeholder="範本名稱" maxlength="60"><textarea id="templateText" rows="8" aria-label="提示詞內容"></textarea><div class="editor-actions"><button id="saveTemplate">儲存</button><button id="cancelTemplate" class="ghost">取消</button></div></div>
+<p class="muted">原始六條完整翻譯提示詞維持不變。</p></section>
+<button id="recordings" class="full">☷ 錄音管理、失敗重試與錯誤紀錄</button>
+<section class="panel"><h2 class="section-title"><span class="symbol">⚙</span> 設定</h2><div class="control-row"><div><strong>顯示 YouTube 浮動錄音按鈕</strong><p class="muted">關閉後仍可透過本面板錄音。</p></div><label class="switch"><input id="overlayEnabled" type="checkbox" aria-label="顯示 YouTube 浮動錄音按鈕"></label></div></section>
+<div class="footer">YT → ChatGPT Translator · v1.20.0</div>
+</main><script src="popup.js"></script></body></html>

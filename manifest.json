@@ -1,0 +1,58 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube 錄音 → ChatGPT 正體中文翻譯",
+  "description": "錄製 YouTube 分頁音訊，不自動下載檔案，直接嘗試上傳 ChatGPT 進行正體中文翻譯。",
+  "version": "1.31.0",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "tabCapture",
+    "offscreen",
+    "storage",
+    "tabs",
+    "notifications",
+    "scripting",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://www.youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "開啟 YouTube 錄音控制面板",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "32": "icon32.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "chatgpt.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "youtube-overlay.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "recordings.html",
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
