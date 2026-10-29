@@ -121,11 +121,27 @@ $('overlayEnabled').onchange=async()=>{
 };
 
 
+const chatLimitKey='liveChatTranslateLimitV133';
+function validChatLimit(value){const number=Number(value);return Number.isInteger(number)&&number>=1&&number<=100?number:null;}
+async function updateChatLimit(){
+ const n=validChatLimit($('chatLimit').value);
+ $('translateChat').textContent=`翻譯直播聊天室最新 ${n??15} 則`;
+ if(n!==null)await chrome.storage.local.set({[chatLimitKey]:n});
+}
+chrome.storage.local.get(chatLimitKey).then(r=>{
+ const n=validChatLimit(r[chatLimitKey])??15;
+ $('chatLimit').value=String(n);
+ $('translateChat').textContent=`翻譯直播聊天室最新 ${n} 則`;
+});
+$('chatLimit').addEventListener('change',()=>updateChatLimit().catch(e=>error(e.message)));
 $('translateChat').onclick=async()=>{
- const button=$('translateChat');button.disabled=true;error('正在擷取直播聊天室最新訊息…');
+ const n=validChatLimit($('chatLimit').value);
+ if(n===null){error('請輸入 1～100 的整數訊息數量。');$('chatLimit').focus();return;}
+ await updateChatLimit();
+ const button=$('translateChat');button.disabled=true;error(`正在擷取直播聊天室最新 ${n} 則訊息…`);
  try{
    const [tab]=await chrome.tabs.query({active:true,lastFocusedWindow:true});
-   const r=await call({type:'TRANSLATE_LIVE_CHAT',tabId:tab?.id,chatId:$('chats').value||null});
+   const r=await call({type:'TRANSLATE_LIVE_CHAT',tabId:tab?.id,chatId:$('chats').value||null,limit:n});
    if(!r?.ok)throw Error(r?.error||'翻譯任務未啟動');
    error(`已擷取 ${r.count} 則直播訊息，正在背景送至 ChatGPT。`);
  }catch(e){error('直播聊天室翻譯失敗：'+e.message)}

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "YouTube 錄音 → ChatGPT 正體中文翻譯",
   "description": "錄製 YouTube 分頁音訊，不自動下載檔案，直接嘗試上傳 ChatGPT 進行正體中文翻譯。",
-  "version": "1.32.0",
+  "version": "1.33.0",
   "minimum_chrome_version": "116",
   "permissions": [
     "tabCapture",

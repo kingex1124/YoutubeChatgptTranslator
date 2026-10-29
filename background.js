@@ -376,7 +376,7 @@ async function readRecentLiveChat(tabId, limit=15){
  const frames=await chrome.scripting.executeScript({target:{tabId,allFrames:true},func:()=>{
    const selectors=['yt-live-chat-text-message-renderer','yt-live-chat-paid-message-renderer','yt-live-chat-membership-item-renderer'];
    const nodes=[...document.querySelectorAll(selectors.join(','))];
-   return {frame:location.href,items:nodes.slice(-60).map(n=>{
+   return {frame:location.href,items:nodes.slice(-100).map(n=>{
      const name=n.querySelector('#author-name')?.textContent?.trim()||'';
      const msg=n.querySelector('#message')?.innerText?.trim()||n.querySelector('#message')?.textContent?.trim()||'';
      return {author:name||'未知發言者',text:msg};
@@ -388,12 +388,13 @@ async function readRecentLiveChat(tabId, limit=15){
  const chosen=(live.length?live:candidates.filter(x=>x.items.length)).sort((a,b)=>b.items.length-a.items.length)[0];
  return (chosen?.items||[]).slice(-limit);
 }
-async function sendLiveChatToGpt(tabId,chatId){
+async function sendLiveChatToGpt(tabId,chatId,limit=15){
+ if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('直播聊天室訊息數量必須是 1～100 的整數。');
  if(queuedCount||activeTransferId)throw Error('目前正在傳送錄音，請完成後再翻譯聊天室訊息。');
  const tab=await chrome.tabs.get(tabId);
  if(!/^https:\/\/(www\.|m\.)?youtube\.com\//.test(tab.url||''))throw Error('請先切換到 YouTube 直播頁面。');
  await logEvent('LIVE_CHAT','reading latest live messages',{tabId});
- const msgs=await readRecentLiveChat(tabId);
+ const msgs=await readRecentLiveChat(tabId,limit);
  if(!msgs.length)throw Error('無法讀取直播聊天室訊息。請確認聊天室已展開、正在顯示訊息，且不是獨立的其他網站聊天室。');
  const text='請將以下 YouTube 直播聊天室最新 '+msgs.length+' 則訊息完整翻譯為臺灣使用的正體中文。保留發言者名稱及每則訊息的順序，保留語氣、玩笑、表情符號與專有名詞；已經是中文的內容可保留原文。不要只做摘要。\n\n'+msgs.map((m,i)=>`${i+1}. ${m.author}：${m.text}`).join('\n');
  if(text.length>18000)throw Error('聊天室訊息過長，已取消傳送。');
@@ -439,7 +440,7 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
   if (m.to === 'offscreen' || m.to === 'chatgpt') return false;
   (async()=>{
     switch(m.type) {
-      case 'TRANSLATE_LIVE_CHAT': return await sendLiveChatToGpt(m.tabId,m.chatId);
+      case 'TRANSLATE_LIVE_CHAT': return await sendLiveChatToGpt(m.tabId,m.chatId,m.limit===undefined?15:m.limit);
       case 'RECORDING_SAVED': await completeRecording(m); return {ok:true};
       case 'RECORDING_ERROR': await logEvent('REC_ERROR',m.error||'unknown'); await setState({phase:'error',error:m.error}); await notify('錄音失敗',m.error); return {ok:true};
       case 'CHAT_CONVERSATION_URL': {
