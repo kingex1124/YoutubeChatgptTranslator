@@ -120,3 +120,14 @@ $('overlayEnabled').onchange=async()=>{
  if(!r.ok){error(r.error||'設定失敗');$('overlayEnabled').checked=!enabled;}
 };
 
+
+$('translateChat').onclick=async()=>{
+ const button=$('translateChat');button.disabled=true;error('正在擷取直播聊天室最新訊息…');
+ try{
+   const [tab]=await chrome.tabs.query({active:true,lastFocusedWindow:true});
+   const r=await call({type:'TRANSLATE_LIVE_CHAT',tabId:tab?.id,chatId:$('chats').value||null});
+   if(!r?.ok)throw Error(r?.error||'翻譯任務未啟動');
+   error(`已擷取 ${r.count} 則直播訊息，正在背景送至 ChatGPT。`);
+ }catch(e){error('直播聊天室翻譯失敗：'+e.message)}
+ finally{button.disabled=false;}
+};

@@ -226,13 +226,31 @@
     }
     await diag('TRANSLATION_MONITOR','timeout after '+Math.round((Date.now()-startedAt)/1000)+'s; observed='+observed,id);
   }
+
+  async function sendChatText(m){
+    const content=String(m.prompt||'').trim();
+    if(!content)throw Error('聊天室翻譯文字為空。');
+    await diag('LIVE_CHAT','waiting for composer',m.id);
+    let el=await waitUntil(editor,20000);
+    const existing=readEditor(el).trim();
+    if(existing && !promptMatches(el,content))throw Error('ChatGPT 聊天室有未送出的草稿，已停止以避免覆蓋。');
+    if(!promptMatches(el,content))setPrompt(el,content);
+    el=await waitUntil(editor,8000);
+    if(!promptMatches(el,content))throw Error('無法確認聊天室翻譯提示詞已完整填入。');
+    const b=await waitUntil(()=>{const button=sendButton();return button&&!button.disabled?button:null;},8000);
+    b.click();
+    await waitUntil(()=>!promptMatches(editor(),content),8000);
+    if(/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+/.test(location.href))chrome.runtime.sendMessage({type:'CHAT_CONVERSATION_URL',url:location.href}).catch(()=>{});
+    await diag('LIVE_CHAT','clicked send for latest chat translation',m.id);
+  }
+
   const messageListener=(m,sender,reply)=>{
     if(m.type==='YT_TRANSLATOR_PING'){reply({ok:true,version:chrome.runtime.getManifest().version,busy});return false;}
-    if(m.type!=='TRANSLATE_AUDIO')return false;
+    if(m.type!=='TRANSLATE_AUDIO' && m.type!=='SEND_LIVE_CHAT_TEXT')return false;
     if(busy){reply({ok:false,error:'busy'});return false;}
     busy=true;activeTask=m.id;const token=++runToken;reply({ok:true});
     (async()=>{
-      try {await execute(m); await status(m.id,true);}
+      try {if(m.type==='SEND_LIVE_CHAT_TEXT') await sendChatText(m); else await execute(m); await status(m.id,true);}
       catch(e){ await diag('PAGE_ERROR',e.message||String(e),m.id); await status(m.id,false,e.message||String(e)); }
       finally {if(token===runToken){busy=false;activeTask=null;}}
     })();

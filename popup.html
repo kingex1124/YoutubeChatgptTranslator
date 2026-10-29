@@ -32,7 +32,7 @@ select{height:41px;white-space:nowrap;text-overflow:ellipsis}textarea{resize:ver
 <main class="main">
 <section class="panel"><div class="status-top"><div id="state">正在讀取狀態…</div><span class="status-tag">RECORDER</span></div><p class="muted" id="detail"></p>
 <div class="metrics"><div class="metric"><b>錄音時間</b><div id="elapsed">錄音時間：00:00</div></div><div class="metric"><b>即時音量</b><meter id="volume" min="0" max="1" value="0"></meter></div></div>
-<button id="toggle" class="primary" disabled>載入中…</button><div id="message" role="status"></div></section>
+<button id="toggle" class="primary" disabled>載入中…</button><button id="translateChat" class="ghost full" style="margin-top:9px">翻譯直播聊天室最新 15 則</button><p class="muted">只擷取目前畫面已載入的直播聊天訊息，不會讀取完整歷史紀錄。</p><div id="message" role="status"></div></section>
 <section class="panel"><h2 class="section-title"><span class="symbol">▤</span> 固定翻譯聊天室</h2><select id="chats" aria-label="選擇聊天室"></select><p class="muted" id="chatInfo"></p>
 <div class="actions"><button id="refreshAll" class="ghost full">↻ 同步標題與更新狀態</button></div><p id="syncStatus" class="muted" role="status">正在同步聊天室資訊…</p>
 <hr class="section-divider"><div class="actions"><button id="new" class="ghost">＋ 建立新聊天串</button><button id="open" class="ghost">↗ 檢視聊天室</button><button id="remove" class="danger-ghost full">移除目前選取的綁定</button></div>
@@ -43,5 +43,5 @@ select{height:41px;white-space:nowrap;text-overflow:ellipsis}textarea{resize:ver
 <p class="muted">原始六條完整翻譯提示詞維持不變。</p></section>
 <button id="recordings" class="full">☷ 錄音管理、失敗重試與錯誤紀錄</button>
 <section class="panel"><h2 class="section-title"><span class="symbol">⚙</span> 設定</h2><div class="control-row"><div><strong>顯示 YouTube 浮動錄音按鈕</strong><p class="muted">關閉後仍可透過本面板錄音。</p></div><label class="switch"><input id="overlayEnabled" type="checkbox" aria-label="顯示 YouTube 浮動錄音按鈕"></label></div></section>
-<div class="footer">YT → ChatGPT Translator · v1.20.0</div>
+<div class="footer">YT → ChatGPT Translator · v1.32.0</div>
 </main><script src="popup.js"></script></body></html>
