@@ -1,4 +1,4 @@
-const DEFAULT_PROMPT = "請將附加音訊的內容完整翻譯成臺灣使用的正體中文。\n\n要求：\n1. 自動辨識日文、英文或其他語言，逐段完整翻譯，不要僅提供摘要。\n2. 保留原本語氣、情緒、玩笑與口語表達，使用自然的臺灣用語。\n3. 人名、專有名詞、遊戲與歌曲名稱盡量保留原文，必要時補充翻譯。\n4. 若能辨識不同說話者，請適當標示。\n5. 聽不清楚之處請標示「（聽不清楚）」，不要自行編造內容。\n6. 若內容很長，請依順序盡量完整翻譯，不要省略。\n\n請直接開始完整翻譯。";
+const DEFAULT_PROMPT = "請將附加音訊的內容完整翻譯成臺灣使用的正體中文。\n\n要求：\n1. 自動辨識日文、英文或其他語言，逐段完整翻譯，不要僅提供摘要。\n2. 保留原本語氣、情緒、玩笑與口語表達，使用自然的臺灣用語。\n3. 人名、專有名詞、遊戲與歌曲名稱盡量保留原文，必要時補充翻譯；遇到較難理解的單字、慣用語、俚語或文化背景時，請視需要簡短補充說明，不要影響逐段翻譯的完整性與流暢度。\n4. 若能辨識不同說話者，請適當標示。\n5. 聽不清楚之處請標示「（聽不清楚）」，不要自行編造內容。\n6. 若內容很長，請依順序盡量完整翻譯，不要省略。\n\n請直接開始完整翻譯。";
 
 const diagnosticKey='diagnosticLogV19';
 // Completion monitor is independent from the tab's long-running content script.
@@ -99,20 +99,59 @@ async function logEvent(stage,message,meta={}) {
 }
 const stateKey = 'recordingState';
 const taskKey='persistentTransferTasksV113';
+
+// Channel routing is local-only. A channel ID is preferred; a YouTube handle is fallback.
+const channelMapKey='channelChatBindingsV135';
+const recordingRouteKey='recordingRouteV135';
+async function getChannelBindings(){const value=(await chrome.storage.local.get(channelMapKey))[channelMapKey];return value&&typeof value==='object'&&!Array.isArray(value)?value:{};}
+async function detectYouTubeChannel(tabId){
+ const result=await chrome.scripting.executeScript({target:{tabId},func:()=>{
+  const links=[...document.querySelectorAll('ytd-video-owner-renderer a[href], ytd-channel-name a[href], #owner a[href], #upload-info a[href]')];
+  const a=links.find(x=>/\/(channel\/UC[\w-]+|@[^/?#]+)/.test(x.getAttribute('href')||''));
+  if(!a)return null;
+  const href=new URL(a.getAttribute('href'),location.origin).pathname;
+  const match=href.match(/^\/(channel\/UC[\w-]+|@[^/?#]+)/);
+  if(!match)return null;
+  return {key:match[1],label:(a.textContent||a.getAttribute('title')||match[1]).trim().slice(0,100)};
+ }});
+ return result?.[0]?.result||null;
+}
+async function resolveChannelChat(channel){
+ if(!channel?.key)return null;
+ const bindings=await getChannelBindings();const id=bindings[channel.key];
+ return (await getChats()).find(c=>c.id===id)?.id||null;
+}
+const liveSeenKey='liveChatSeenV134';
 const templateKey='promptTemplatesV113';
 const selectedTemplateKey='selectedPromptTemplateV113';
-async function getTemplates(){return (await chrome.storage.local.get(templateKey))[templateKey]||[{id:'original',name:'原始完整翻譯（六條）',text:DEFAULT_PROMPT}];}
+async function getTemplates(){const stored=(await chrome.storage.local.get(templateKey))[templateKey];const list=Array.isArray(stored)?stored.filter(t=>t&&t.id!=='original'):[];return [{id:'original',name:'原始完整翻譯（六條）',text:DEFAULT_PROMPT},...list];}
 async function selectedPrompt(){const a=await chrome.storage.local.get(selectedTemplateKey);const list=await getTemplates();return list.find(t=>t.id===(a[selectedTemplateKey]||'original'))?.text||DEFAULT_PROMPT;}
 async function queueSnapshot(){return (await chrome.storage.local.get(taskKey))[taskKey]||[];}
+// Clearing an entry removes its permission to execute when the serialized transfer tail reaches it.
+async function clearTransferHistory(mode){
+ if(!['done','all'].includes(mode))throw new Error('不支援的清理模式。');
+ const list=await queueSnapshot();
+ if(mode==='all' && (activeTransferId || list.some(t=>t.status==='sending'))){
+  throw new Error('目前有音檔正在傳送，請等傳送完成後再清空佇列。');
+ }
+ const removable=mode==='done'?new Set(['done']):new Set(['done','failed','uncertain','queued']);
+ const kept=list.filter(t=>!removable.has(t.status));
+ await writeQueue(kept);
+ await logEvent('QUEUE_CLEAR',mode==='done'?'cleared completed jobs':'cleared non-active jobs',{removed:list.length-kept.length});
+ await refreshBadge();
+ return {removed:list.length-kept.length,remaining:kept.length};
+}
+
 async function writeQueue(items){await chrome.storage.local.set({[taskKey]:items});}
-async function markQueue(id,fields){const list=await queueSnapshot();const i=list.findIndex(t=>t.id===id);if(i>=0){list[i]={...list[i],...fields};await writeQueue(list);}}
+async function markQueue(id,fields){const list=await queueSnapshot();const i=list.findIndex(t=>t.id===id);if(i>=0){list[i]={...list[i],...fields,updatedAt:Date.now()};await writeQueue(list);}}
+async function queueStage(id,stage){await markQueue(id,{stage});await logEvent('QUEUE_STAGE',stage,{id});}
 let restoringQueue=false;
 async function restoreQueue(){
  if(restoringQueue||queuedCount)return;restoringQueue=true;
  try {const list=await queueSnapshot();
  for(const t of list.filter(t=>t.status==='queued'))queueTransfer(t.id,t.filename,t.chatId,true).catch(e=>logEvent('QUEUE_RESTORE_ERROR',e.message,{id:t.id}));
  const interrupted=list.filter(t=>t.status==='sending');
- if(interrupted.length){for(const t of interrupted){t.status='uncertain';t.error='背景程序曾重新啟動，請先確認 ChatGPT 是否已收到，再手動重試。';}await writeQueue(list);}
+ if(interrupted.length){for(const t of interrupted){t.status='uncertain';t.stage='結果未確認';t.error='背景程序曾重新啟動，請先確認 ChatGPT 是否已收到，再手動重試。';}await writeQueue(list);}
  }finally{restoringQueue=false;}
 }
 async function refreshBadge(){
@@ -132,12 +171,18 @@ const transferTimeoutMs = 65000;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 function queueTransfer(id, filename, chatId = null, restored = false) {
   queuedCount++;
-  const register = restored ? Promise.resolve() : (async()=>{const list=await queueSnapshot();const index=list.findIndex(t=>t.id===id);if(index>=0)list.splice(index,1);list.push({id,filename,chatId,status:'queued',createdAt:Date.now()});await writeQueue(list);})();
+  const register = restored ? Promise.resolve() : (async()=>{const list=await queueSnapshot();const index=list.findIndex(t=>t.id===id);if(index>=0)list.splice(index,1);list.push({id,filename,chatId,status:'queued',stage:'等待傳送',createdAt:Date.now()});await writeQueue(list);})();
   const task = transferTail.catch(() => {}).then(async () => {
     await register;
-    await markQueue(id,{status:'sending'});activeTransferId=id;await refreshBadge();
-    try {await openChatAndTransfer(id,filename,chatId);await markQueue(id,{status:'done',error:null});}
-    catch(e){await markQueue(id,{status:'failed',error:e.message});throw e;}
+    // A pending job may have been canceled by Clear Queue before its turn.
+    const pending=(await queueSnapshot()).find(t=>t.id===id);
+    if(!pending || pending.status!=='queued'){
+      await logEvent('QUEUE_SKIP','task was canceled or is no longer queued',{id});
+      return;
+    }
+    await markQueue(id,{status:'sending',stage:'取得聊天室'});activeTransferId=id;await refreshBadge();
+    try {await openChatAndTransfer(id,filename,chatId);await markQueue(id,{status:'done',stage:'已送出',error:null});}
+    catch(e){await markQueue(id,{status:'failed',stage:'傳送失敗',error:e.message});throw e;}
     finally {activeTransferId=null;await refreshBadge();}
   }).finally(()=>{queuedCount=Math.max(0,queuedCount-1);});
   transferTail=task.catch(()=>{});return task;
@@ -187,6 +232,7 @@ async function startRecording(tab) {
     const r = await msgOffscreen({type:'START', streamId, tabId:tab.id, title:tab.title});
     if (!r?.ok) throw new Error(r?.error || '無法開始錄製。');
     await setState({phase:'recording', tabId:tab.id, title:tab.title, startedAt:Date.now()});
+    try{const channel=await detectYouTubeChannel(tab.id);await chrome.storage.local.set({[recordingRouteKey]:{tabId:tab.id,channel,chatId:await resolveChannelChat(channel)}});}catch(e){await logEvent('CHANNEL_ROUTE','頻道偵測失敗，使用預設聊天室',{error:e.message});}
   } catch(e) {
     await logEvent('REC_ERROR',e.message);
     await setState({phase:'error', error:e.message});
@@ -343,6 +389,8 @@ async function openChatAndTransfer(id, filename, chatId = null) {
   const target=await acquireDedicatedTab(chatId);
   await logEvent('TRANSFER','dedicated tab acquired',{tabId:target.id});
   await connectChatScript(target.id);
+  await queueStage(id,'檢查聊天室');
+  await preflightChat(target.id);
   await logEvent('TRANSFER','content script connected',{tabId:target.id});
   const now=await getState();
   if(!['recording','starting','stopping'].includes(now.phase)) await setState({phase:'uploading',lastId:id,filename});
@@ -355,6 +403,7 @@ async function openChatAndTransfer(id, filename, chatId = null) {
   },transferTimeoutMs);
   transferWaiters.set(id,{resolve:resolveWaiter,timer,tabId:target.id,chatId});
   try {
+    await queueStage(id,'讀取與附加音檔');
     await logEvent('TRANSFER','send TRANSLATE_AUDIO command',{id});
     const prompt=await selectedPrompt();
     if(!prompt.trim())throw new Error('翻譯提示詞內容為空，禁止傳送。');
@@ -371,6 +420,14 @@ async function openChatAndTransfer(id, filename, chatId = null) {
   }
 }
 
+
+async function preflightChat(tabId){
+  const result=await chrome.tabs.sendMessage(tabId,{type:'YT_TRANSLATOR_PREFLIGHT'});
+  await logEvent('CHAT_PREFLIGHT',result?.ok?'ready':'blocked',{tabId,reason:result?.error||null});
+  if(!result?.ok)throw new Error(result?.error||'聊天室尚未就緒');
+  return result;
+}
+
 // Read the latest currently rendered messages from YouTube live chat frames.
 async function readRecentLiveChat(tabId, limit=15){
  const frames=await chrome.scripting.executeScript({target:{tabId,allFrames:true},func:()=>{
@@ -379,7 +436,7 @@ async function readRecentLiveChat(tabId, limit=15){
    return {frame:location.href,items:nodes.slice(-100).map(n=>{
      const name=n.querySelector('#author-name')?.textContent?.trim()||'';
      const msg=n.querySelector('#message')?.innerText?.trim()||n.querySelector('#message')?.textContent?.trim()||'';
-     return {author:name||'未知發言者',text:msg};
+     return {author:name||'未知發言者',text:msg,messageId:n.id||n.getAttribute('data-id')||''};
    }).filter(x=>x.text)};
  }});
  const candidates=frames.map(f=>f.result).filter(Boolean);
@@ -393,18 +450,41 @@ async function sendLiveChatToGpt(tabId,chatId,limit=15){
  if(queuedCount||activeTransferId)throw Error('目前正在傳送錄音，請完成後再翻譯聊天室訊息。');
  const tab=await chrome.tabs.get(tabId);
  if(!/^https:\/\/(www\.|m\.)?youtube\.com\//.test(tab.url||''))throw Error('請先切換到 YouTube 直播頁面。');
- await logEvent('LIVE_CHAT','reading latest live messages',{tabId});
  const msgs=await readRecentLiveChat(tabId,limit);
- if(!msgs.length)throw Error('無法讀取直播聊天室訊息。請確認聊天室已展開、正在顯示訊息，且不是獨立的其他網站聊天室。');
- const text='請將以下 YouTube 直播聊天室最新 '+msgs.length+' 則訊息完整翻譯為臺灣使用的正體中文。保留發言者名稱及每則訊息的順序，保留語氣、玩笑、表情符號與專有名詞；已經是中文的內容可保留原文。不要只做摘要。\n\n'+msgs.map((m,i)=>`${i+1}. ${m.author}：${m.text}`).join('\n');
- if(text.length>18000)throw Error('聊天室訊息過長，已取消傳送。');
- const target=await acquireDedicatedTab(chatId||null);
- await connectChatScript(target.id);
+ if(!msgs.length)throw Error('無法讀取直播聊天室訊息。請確認聊天室已展開。');
+ // Dedupe per video and destination chat; independent from previous versions' saved settings.
+ const videoId=new URL(tab.url).searchParams.get('v') || new URL(tab.url).pathname;
+ const routeChannelForDedupe=await detectYouTubeChannel(tabId).catch(()=>null);
+ const resolvedForDedupe=await resolveChannelChat(routeChannelForDedupe);
+ const key=videoId+'::'+(resolvedForDedupe||chatId||'selected');
+ const store=(await chrome.storage.local.get(liveSeenKey))[liveSeenKey]||{};
+ const history=store[key]||[];const seen=new Set(history);
+ // Distinguish repeated identical messages only when YouTube supplies a stable message ID.
+ const fingerprints=msgs.map(m=>m.messageId?'id:'+m.messageId:'text:'+m.author+'\u241f'+m.text);
+ const fresh=msgs.filter((m,i)=>!seen.has(fingerprints[i]));
+ if(!fresh.length){await logEvent('LIVE_CHAT_DEDUPE','no new messages',{count:msgs.length,key});return {ok:true,count:0,skipped:msgs.length,message:'最新 '+msgs.length+' 則訊息都已送過，沒有新訊息。'};}
+ const prompt='請將以下 YouTube 直播聊天室最新 '+fresh.length+' 則訊息完整翻譯為臺灣使用的正體中文。保留發言者名稱及每則訊息的順序，保留語氣、玩笑、表情符號與專有名詞；已經是中文的內容可保留原文。不要只做摘要。\n\n'+fresh.map((m,i)=>`${i+1}. ${m.author}：${m.text}`).join('\n');
+ if(prompt.length>18000)throw Error('聊天室訊息過長，已取消傳送。');
+ const routeChannel=await detectYouTubeChannel(tabId).catch(()=>null);
+ const routedChatId=await resolveChannelChat(routeChannel);
+ const finalChatId=routedChatId||chatId||null;
+ const target=await acquireDedicatedTab(finalChatId);await connectChatScript(target.id);await preflightChat(target.id);
  const id=crypto.randomUUID();
- const r=await chrome.tabs.sendMessage(target.id,{type:'SEND_LIVE_CHAT_TEXT',id,prompt:text});
- if(!r?.ok)throw Error(r?.error||'ChatGPT 未接受聊天室翻譯任務');
- await logEvent('LIVE_CHAT','translation started',{count:msgs.length,id,tabId:target.id});
- return {ok:true,count:msgs.length};
+ // Text tasks report the result later. Track status before considering the batch processed.
+ const result=await new Promise(async(resolve,reject)=>{
+   const timer=setTimeout(()=>{transferWaiters.delete(id);reject(Error('聊天室翻譯送出超時，結果未確認，不自動標記已翻譯。'));},30000);
+   transferWaiters.set(id,{tabId:target.id,resolve:r=>{clearTimeout(timer);resolve(r);},timer});
+   try{const r=await chrome.tabs.sendMessage(target.id,{type:'SEND_LIVE_CHAT_TEXT',id,prompt});if(!r?.ok)throw Error(r?.error||'ChatGPT 未接受聊天室翻譯任務');}
+   catch(e){clearTimeout(timer);transferWaiters.delete(id);reject(e);}
+ });
+ if(!result.ok)throw Error(result.error||'聊天室翻譯送出失敗');
+ const updated=[...new Set([...history,...fingerprints.filter((f,i)=>!seen.has(f))])].slice(-1000);
+ store[key]=updated;
+ // Bound storage growth across channels. Do not alter existing application storage keys.
+ const keys=Object.keys(store);if(keys.length>80)for(const k of keys.slice(0,keys.length-80))delete store[k];
+ await chrome.storage.local.set({[liveSeenKey]:store});
+ await logEvent('LIVE_CHAT_DEDUPE','sent new messages',{newCount:fresh.length,skipped:msgs.length-fresh.length,key});
+ return {ok:true,count:fresh.length,skipped:msgs.length-fresh.length};
 }
 
 async function completeRecording(info) {
@@ -418,7 +498,8 @@ async function completeRecording(info) {
   await setState({phase:'saved', lastId:info.id,filename:info.filename});
   try {
     if (info.bytes > 100*1024*1024) throw new Error('錄音超過自動附檔的安全上限 100 MB，請從錄音管理頁面手動處理。');
-    await queueTransfer(info.id,info.filename);
+    const route=(await chrome.storage.local.get(recordingRouteKey))[recordingRouteKey];
+    await queueTransfer(info.id,info.filename,route?.chatId||null);
   } catch(e) {
     await logEvent('TRANSFER_ERROR',e.message,{id:info.id});
     await setState({phase:'error',lastId:info.id,filename:info.filename,error:e.message});
@@ -483,7 +564,17 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
         await chrome.storage.local.set({youtubeOverlayEnabled:!!m.enabled});
         return {ok:true};
       }
-      case 'DIAG_LOG': await logEvent('PAGE',m.stage||'PAGE',m.message||'',{taskId:m.taskId||null}); return {ok:true};
+      case 'DIAG_LOG': {
+        await logEvent('PAGE',m.stage||'PAGE',m.message||'',{taskId:m.taskId||null});
+        if(m.taskId && m.stage==='PAGE'){const message=String(m.message||'');const stage=/attachment ready/.test(message)?'音檔已附加':/prompt inserted|full prompt verified/.test(message)?'提示詞已填入':/click send button/.test(message)?'正在送出':/reading audio/.test(message)?'讀取音檔':null;if(stage)await queueStage(m.taskId,stage);}
+        return {ok:true};
+      }
+      case 'GET_QUEUE': return {ok:true,queue:await queueSnapshot()};
+      case 'CLEAR_QUEUE_HISTORY': {
+        const result=await clearTransferHistory(m.mode);
+        return {ok:true,...result};
+      }
+
       case 'GET_DIAGNOSTICS': return {ok:true,entries:(await chrome.storage.local.get(diagnosticKey))[diagnosticKey]||[],state:await getState(),version:chrome.runtime.getManifest().version};
       case 'CLEAR_DIAGNOSTICS': await chrome.storage.local.set({[diagnosticKey]:[]}); return {ok:true};
       case 'OPEN_DIAGNOSTICS': await chrome.tabs.create({url:chrome.runtime.getURL('diagnostics.html')});return {ok:true};
@@ -497,7 +588,7 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
       }
       case 'OPEN_RECORDINGS': await chrome.tabs.create({url:chrome.runtime.getURL('recordings.html')});return {ok:true};
       case 'ENSURE_OFFSCREEN': await ensureOffscreen(); return {ok:true};
-      case 'STATE': return {ok:true,state:await getState(),queuedCount,activeTransferId,queue:(await queueSnapshot()).filter(t=>['queued','sending'].includes(t.status))};
+      case 'STATE': return {ok:true,state:await getState(),queuedCount,activeTransferId,queue:await queueSnapshot()};
       case 'METER': {
         const v=Math.max(0,Math.min(1,Number(m.level)||0));await chrome.storage.session.set({audioMeter:{level:v,at:Date.now()}});return {ok:true};
       }
@@ -529,6 +620,20 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
       }
       case 'SYNC_CHAT_TITLES': return await syncChatTitles();
       case 'LIST_CHATS': {const chats=await getChats();const selected=await getSelectedChat();return {ok:true,chats,selectedChatId:selected?.id||null};}
+      case 'GET_CHANNEL_BINDINGS': return {ok:true,bindings:await getChannelBindings()};
+      case 'DETECT_CHANNEL': {
+        const tabs=await chrome.tabs.query({active:true,lastFocusedWindow:true});
+        const tab=tabs[0];if(!tab?.url?.includes('youtube.com'))return {ok:false,error:'請先切換到 YouTube 影片或直播頁面。'};
+        const channel=await detectYouTubeChannel(tab.id);if(!channel)return {ok:false,error:'無法辨識頻道。請確認影片資訊已載入。'};
+        return {ok:true,channel,boundChatId:(await getChannelBindings())[channel.key]||null};
+      }
+      case 'SET_CHANNEL_BINDING': {
+        const channelKey=String(m.channelKey||'');if(!/^(channel\/UC[\w-]+|@[\w.\-]+)$/.test(channelKey))throw Error('頻道識別碼無效');
+        if(m.chatId&&!(await getChats()).some(c=>c.id===m.chatId))throw Error('選擇的聊天室已不存在');
+        const bindings=await getChannelBindings();if(m.chatId)bindings[channelKey]=m.chatId;else delete bindings[channelKey];
+        await chrome.storage.local.set({[channelMapKey]:bindings});return {ok:true};
+      }
+
       case 'CREATE_CHAT': {if(activeTransferId||queuedCount)throw new Error('正在上傳音檔，請完成後再切換聊天室。');const chat=await createChat();return {ok:true,chat};}
       case 'CREATE_RETRY_CHAT': {if(activeTransferId||queuedCount)throw new Error('正在上傳音檔，請完成後再建立聊天室。');const chat=await createChat(false);return {ok:true,chat};}
       case 'REMOVE_CHAT': {
@@ -538,6 +643,7 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
         const index=chats.findIndex(c=>c.id===m.id);
         if(index<0)throw new Error('找不到要移除的聊天室。');
         const removed=chats[index];
+        const bindings=await getChannelBindings();for(const [key,value] of Object.entries(bindings))if(value===m.id)delete bindings[key];await chrome.storage.local.set({[channelMapKey]:bindings});
         const remaining=chats.filter(c=>c.id!==m.id);
         const selected=await getSelectedChat();
         const next=selected?.id===m.id ? (remaining[0]||null) : selected;

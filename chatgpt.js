@@ -246,6 +246,14 @@
 
   const messageListener=(m,sender,reply)=>{
     if(m.type==='YT_TRANSLATOR_PING'){reply({ok:true,version:chrome.runtime.getManifest().version,busy});return false;}
+    if(m.type==='YT_TRANSLATOR_PREFLIGHT'){
+      const e=editor();const draft=readEditor(e).trim();
+      const route=location.pathname;
+      const blocked=!e || !!document.querySelector('input[type="password"]') || (/\/auth\/|\/login|\/signup/.test(route));
+      const stop=!!document.querySelector('button[data-testid="stop-button"]');
+      reply(blocked?{ok:false,error:'ChatGPT 尚未登入或輸入框尚未就緒。'}:busy?{ok:false,error:'ChatGPT 仍在處理另一筆傳送。'}:stop?{ok:false,error:'ChatGPT 正在產生回覆，請完成後重試。'}:draft?{ok:false,error:'ChatGPT 聊天室有未送出的草稿，請先處理再傳送。'}:{ok:true});
+      return false;
+    }
     if(m.type!=='TRANSLATE_AUDIO' && m.type!=='SEND_LIVE_CHAT_TEXT')return false;
     if(busy){reply({ok:false,error:'busy'});return false;}
     busy=true;activeTask=m.id;const token=++runToken;reply({ok:true});

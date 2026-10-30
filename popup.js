@@ -147,3 +147,21 @@ $('translateChat').onclick=async()=>{
  }catch(e){error('直播聊天室翻譯失敗：'+e.message)}
  finally{button.disabled=false;}
 };
+
+let detectedChannel=null;
+$('detectChannel').onclick=async()=>{
+ try{
+  const r=await call({type:'DETECT_CHANNEL'});if(!r?.ok)throw Error(r?.error||'無法辨識頻道');
+  detectedChannel=r.channel;
+  const chats=await call({type:'LIST_CHATS'});
+  const sel=$('channelChat');sel.replaceChildren();
+  const base=document.createElement('option');base.value='';base.textContent='使用預設聊天室（不綁定）';sel.append(base);
+  for(const chat of chats.chats||[]){const opt=document.createElement('option');opt.value=chat.id;opt.textContent=chat.syncedTitle||chat.label;sel.append(opt);}
+  sel.value=r.boundChatId||'';
+  $('channelInfo').textContent=`目前頻道：${r.channel.label} (${r.channel.key})`;
+ }catch(e){detectedChannel=null;$('channelInfo').textContent=e.message;}
+};
+$('saveChannel').onclick=async()=>{
+ if(!detectedChannel){$('channelInfo').textContent='請先偵測 YouTube 頻道。';return;}
+ try{const r=await call({type:'SET_CHANNEL_BINDING',channelKey:detectedChannel.key,chatId:$('channelChat').value});if(!r?.ok)throw Error(r.error);$('channelInfo').textContent=`${detectedChannel.label}：已儲存頻道設定。`;}catch(e){$('channelInfo').textContent=e.message;}
+};

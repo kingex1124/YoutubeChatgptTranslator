@@ -14,8 +14,38 @@ async function download(id,filename){
   const url=URL.createObjectURL(new Blob(parts,{type:info.mime}));
   const a=document.createElement('a');a.href=url;a.download=filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
 }
+async function loadQueue(){
+ const r=await chrome.runtime.sendMessage({type:'GET_QUEUE'});if(!r?.ok)throw Error(r?.error||'無法讀取佇列');
+ const root=$('queueProgress');root.replaceChildren();
+ queueForFilter=r.queue||[];
+ const tasks=r.queue||[];
+ const busy=tasks.some(t=>t.status==='sending');
+ $('clearQueueDone').disabled=!tasks.some(t=>t.status==='done');
+ $('clearQueueAll').disabled=busy||!tasks.some(t=>['done','failed','uncertain','queued'].includes(t.status));
+ const records=tasks.slice(-30).reverse();if(!records.length){root.textContent='目前沒有傳送任務。';return;}
+ for(const task of records){const div=document.createElement('div');div.className='item';const label=document.createElement('div');label.style.overflowWrap='anywhere';label.textContent=`${task.filename||task.id} — ${task.stage||task.status}`+(task.error?' — '+task.error:'');div.append(label);root.append(div);}
+}
+$('refreshQueue').onclick=()=>loadQueue().catch(e=>report(e.message));
+async function clearQueue(mode){
+ const isAll=mode==='all';
+ const message=isAll
+  ?'確定清空傳送佇列？\n\n將取消等待中任務，並清除已送出、失敗與結果不明的紀錄。\n本機錄音與 ChatGPT 聊天紀錄不會刪除。\n已送出的訊息無法撤回。'
+  :'確定清除所有「已送出」的佇列紀錄？\n本機錄音與 ChatGPT 對話不會被刪除。';
+ if(!confirm(message))return;
+ $('clearQueueDone').disabled=true;$('clearQueueAll').disabled=true;
+ try{
+   const r=await chrome.runtime.sendMessage({type:'CLEAR_QUEUE_HISTORY',mode});
+   if(!r?.ok)throw Error(r?.error||'清理失敗');
+   $('queueStatus').textContent=`已清理 ${r.removed} 筆佇列紀錄，保留 ${r.remaining} 筆。錄音檔案未刪除。`;
+   await loadQueue();await load();
+ }catch(e){$('queueStatus').textContent='清理失敗：'+e.message;await loadQueue();}
+}
+$('clearQueueDone').onclick=()=>clearQueue('done');
+$('clearQueueAll').onclick=()=>clearQueue('all');
+
 let retryChatId=null;
 let deletingAll=false;
+let allRecordingItems=[];let queueForFilter=[];
 async function loadChats(sync=false){
   if(sync){const result=await chrome.runtime.sendMessage({type:'SYNC_CHAT_TITLES'});if(!result?.ok)throw Error(result?.error||'同步標題失敗');$('chatStatus').textContent=result.reason||`已比對 ${result.matched||0} / ${result.total||0} 個聊天標題，更新 ${result.updated||0} 個。`;}
   const r=await chrome.runtime.sendMessage({type:'LIST_CHATS'});
@@ -39,11 +69,23 @@ async function load(){
   const state=await chrome.runtime.sendMessage({type:'STATE'});
   $('current').textContent='目前狀態：'+({idle:'待命',recording:'錄音中',starting:'正在啟動',stopping:'正在結束',saved:'錄音已儲存',uploading:'正在上傳 ChatGPT',done:'已嘗試點擊 ChatGPT 送出',error:'需要處理錯誤'}[state.state?.phase]||'未知')+(state.state?.error?' — '+state.state.error:'');
   const r=await ready();if(!r?.ok)throw new Error(r?.error||'資料庫無法讀取');
+  allRecordingItems=r.items||[];
   const container=$('list');container.replaceChildren();
+  const bytes=allRecordingItems.reduce((sum,x)=>sum+(Number(x.bytes)||0),0);
+  $('storageUsage').textContent=`本機錄音：${allRecordingItems.length} 筆，約 ${(bytes/1024/1024).toFixed(2)} MB（不包含瀏覽器索引與其他儲存資料）`;
+  const term=$('searchRecordings').value.trim().toLocaleLowerCase();const filter=$('filterRecordings').value;
+  const filtered=allRecordingItems.filter(item=>{
+   if(term&&!String(item.filename||'').toLocaleLowerCase().includes(term))return false;
+   const tasks=queueForFilter.filter(q=>q.id===item.id);const status=tasks.at(-1)?.status||'';
+   if(filter==='sent')return status==='done';
+   if(filter==='failed')return ['failed','uncertain'].includes(status);
+   if(filter==='pending')return ['queued','sending'].includes(status);
+   return true;
+  });
   $('recordingCount').textContent=`（${r.items.length} 筆）`;
   $('deleteAll').disabled=!r.items.length||deletingAll;
   if(!r.items.length){container.textContent='目前沒有已完成的錄音。';return;}
-  for(const item of r.items){
+  for(const item of filtered){
     const div=document.createElement('div');div.className='item';
     const desc=document.createElement('div'),title=document.createElement('div'),meta=document.createElement('div');title.className='title';title.textContent=item.filename;meta.className='meta';meta.textContent=new Date(item.createdAt).toLocaleString('zh-TW')+' · '+(item.bytes/1024/1024).toFixed(1)+' MB';desc.append(title,meta);
     const buttons=document.createElement('div');buttons.className='buttons';
@@ -73,4 +115,7 @@ $('deleteAll').onclick=async()=>{
   }catch(e){report('刪除失敗：'+e.message);}
   finally{deletingAll=false;await load().catch(e=>report('重新整理失敗：'+e.message));}
 };
-Promise.all([loadChats(),load(),loadLog()]).catch(e=>report(e.message));
+Promise.all([loadChats(),load(),loadLog(),loadQueue()]).catch(e=>report(e.message));
+
+$('searchRecordings').addEventListener('input',()=>load().catch(e=>report(e.message)));
+$('filterRecordings').addEventListener('change',()=>load().catch(e=>report(e.message)));
