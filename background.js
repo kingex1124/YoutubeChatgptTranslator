@@ -122,6 +122,9 @@ async function resolveChannelChat(channel){
  return (await getChats()).find(c=>c.id===id)?.id||null;
 }
 const liveSeenKey='liveChatSeenV134';
+const liveBatchKey='liveChatBatchHistoryV139';
+const liveLastBatchKey='liveChatLastBatchV140';
+
 const templateKey='promptTemplatesV113';
 const selectedTemplateKey='selectedPromptTemplateV113';
 async function getTemplates(){const stored=(await chrome.storage.local.get(templateKey))[templateKey];const list=Array.isArray(stored)?stored.filter(t=>t&&t.id!=='original'):[];return [{id:'original',name:'原始完整翻譯（六條）',text:DEFAULT_PROMPT},...list];}
@@ -320,33 +323,63 @@ async function createChat(select = true) {
 }
 const isConversationUrl = url => /^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+(?:[/?#]|$)/.test(url || '');
 
-// 僅讀取已開啟 ChatGPT 頁面中的對話導覽連結，不切換頁籤或修改對話。
-// 網站未載入某筆聊天的側邊欄項目時，保留已儲存標題。
+// 同步 ChatGPT 對話標題：優先採用目前開啟對話的頁面標題，
+// 再以已載入側邊欄的對話連結作為備援。完全不更動對話內容。
 async function syncChatTitles() {
   const chats = await getChats();
   const ids = [...new Set(chats.map(c => (c.conversationUrl || '').match(/\/c\/([a-zA-Z0-9-]+)/)?.[1]).filter(Boolean))];
-  if (!ids.length) return {ok:true,updated:0,total:0,reason:'尚無已建立的聊天室可同步'};
+  if (!ids.length) return {ok:true,updated:0,total:0,matched:0,reason:'尚無已建立的聊天室可同步'};
   const tabs = await chrome.tabs.query({url:['https://chatgpt.com/*']});
   const found = new Map();
+  const sources = {};
+  const normalize = value => String(value||'').replace(/\s+/g,' ').trim();
+  const valid = value => value && value.length <= 180 && !/^(ChatGPT|OpenAI|聊天|Chat|New chat|新聊天|Loading\.{0,3}|載入中[.…]*)$/i.test(value);
+  // sidebars are potentially virtualized. Treat them as a fallback, since they can
+  // still contain a cached old label immediately after a rename.
   for (const tab of tabs) {
     if (!tab.id || !tab.url?.startsWith('https://chatgpt.com/')) continue;
     try {
       const result = await chrome.scripting.executeScript({target:{tabId:tab.id},func:(targetIds)=>{
-        const values = {};
-        const wanted = new Set(targetIds);
+        const wanted = new Set(targetIds),sidebar = {}, active = {};
+        const norm = value => String(value||'').replace(/\s+/g,' ').trim();
+        const useful = value => value && value.length <= 180 && !/^(ChatGPT|OpenAI|聊天|Chat|New chat|新聊天)$/i.test(value);
+        const getId = raw => { try { const url=new URL(raw,location.href); return url.origin==='https://chatgpt.com' ? url.pathname.match(/^\/c\/([a-zA-Z0-9-]+)/)?.[1] : null; } catch { return null; } };
         for (const anchor of document.querySelectorAll('a[href*="/c/"]')) {
-          let id;
-          try { const url = new URL(anchor.getAttribute('href'),location.href); if(url.origin !== 'https://chatgpt.com')continue; id=url.pathname.match(/^\/c\/([a-zA-Z0-9-]+)/)?.[1]; } catch {continue;}
-          if (!id || !wanted.has(id)) continue;
-          const content = (anchor.innerText || anchor.getAttribute('aria-label') || anchor.getAttribute('title') || '').trim().replace(/\s+/g,' ');
-          if (!content || content.length > 180) continue;
-          // 排除常見操作按鈕名稱與隱藏控制項文字。
-          if (/^(更多|More|開啟選單|ChatGPT)$/i.test(content)) continue;
-          values[id]=content;
+          const id=getId(anchor.getAttribute('href'));
+          if(!id || !wanted.has(id)) continue;
+          const label=norm(anchor.innerText||anchor.getAttribute('aria-label')||anchor.getAttribute('title'));
+          if(useful(label)) sidebar[id]=label;
         }
-        return values;
+        const currentId=getId(location.href);
+        if(currentId && wanted.has(currentId)) {
+          // Browser document title is generally updated when a conversation is renamed;
+          // it is a stronger signal than the asynchronously updated sidebar.
+          const title=norm(document.title).replace(/\s*[|｜·-]\s*ChatGPT\s*$/i,'').trim();
+          if(useful(title))active[currentId]=title;
+          // Some ChatGPT layouts use a title button instead of document.title.
+          const titleElements=[...document.querySelectorAll('header button[aria-label*="title"], header [data-testid*="conversation-title"], [data-testid="conversation-title"]')];
+          for(const item of titleElements){
+            const value=norm(item.textContent||item.getAttribute('aria-label'));
+            if(useful(value)){active[currentId]=value;break;}
+          }
+        }
+        return {sidebar,active,currentId};
       },args:[ids]});
-      for(const [id,title] of Object.entries(result?.[0]?.result||{})) if(!found.has(id))found.set(id,title);
+      const data=result?.[0]?.result||{};
+      for(const [id,title] of Object.entries(data.sidebar||{})) {
+        const cleaned=normalize(title);
+        if(valid(cleaned)&&!found.has(id)){found.set(id,cleaned);sources[id]='sidebar';}
+      }
+      for(const [id,title] of Object.entries(data.active||{})) {
+        const cleaned=normalize(title);
+        if(valid(cleaned)){found.set(id,cleaned);sources[id]='active-tab';}
+      }
+      // Chrome title is an additional hint if a current page cannot expose document.title.
+      const activeId=(tab.url||'').match(/\/c\/([a-zA-Z0-9-]+)/)?.[1];
+      const chromeTitle=normalize(tab.title).replace(/\s*[|｜·-]\s*ChatGPT\s*$/i,'').trim();
+      if(activeId&&ids.includes(activeId)&&valid(chromeTitle)&&sources[activeId]!=='active-tab') {
+        found.set(activeId,chromeTitle);sources[activeId]='browser-tab';
+      }
     } catch(e) { await logEvent('TITLE_SYNC_TAB_SKIP',e.message,{tabId:tab.id}); }
   }
   let updated=0;
@@ -358,8 +391,9 @@ async function syncChatTitles() {
     return {...c,syncedTitle:title,titleSyncedAt:Date.now()};
   });
   if(updated)await chrome.storage.local.set({[chatsKey]:next});
-  await logEvent('TITLE_SYNC','同步完成',{updated,matched:found.size,total:ids.length,tabs:tabs.length});
-  return {ok:true,updated,matched:found.size,total:ids.length,tabs:tabs.length};
+  const missing=ids.filter(id=>!found.has(id));
+  await logEvent('TITLE_SYNC','同步完成',{updated,matched:found.size,total:ids.length,tabs:tabs.length,sources,missing});
+  return {ok:true,updated,matched:found.size,total:ids.length,tabs:tabs.length,missing:missing.length,active:Object.values(sources).filter(x=>x==='active-tab').length};
 }
 
 async function acquireDedicatedTab(chatId = null) {
@@ -445,6 +479,95 @@ async function readRecentLiveChat(tabId, limit=15){
  const chosen=(live.length?live:candidates.filter(x=>x.items.length)).sort((a,b)=>b.items.length-a.items.length)[0];
  return (chosen?.items||[]).slice(-limit);
 }
+async function liveChatScope(tabId,chatId){
+ const tab=await chrome.tabs.get(tabId);
+ if(!/^https:\/\/(www\.|m\.)?youtube\.com\//.test(tab.url||''))throw Error('請先切換到 YouTube 直播頁面。');
+ const url=new URL(tab.url);
+ const videoId=url.searchParams.get('v')||url.pathname;
+ const channel=await detectYouTubeChannel(tabId).catch(()=>null);
+ const route=await resolveChannelChat(channel);
+ const selected=chatId||((await getSelectedChat())?.id)||null;
+ return {key:videoId+'::'+(route||selected||'selected'),videoId,chatId:route||selected||null,url:tab.url,title:tab.title||'YouTube 直播'};
+}
+async function saveLiveBatch(scope,rows,summary){
+ const all=(await chrome.storage.local.get(liveBatchKey))[liveBatchKey]||{};
+ all[scope.key]={scope:{key:scope.key,videoId:scope.videoId,chatId:scope.chatId,title:scope.title,url:scope.url},rows:rows.slice(-100).map(r=>({author:r.author,text:r.text,messageId:r.messageId||'',status:r.status,reason:r.reason||''})),summary:{...summary,time:Date.now()}};
+ const entries=Object.entries(all).sort((a,b)=>(b[1].summary?.time||0)-(a[1].summary?.time||0)).slice(0,30);
+ await chrome.storage.local.set({[liveBatchKey]:Object.fromEntries(entries),[liveLastBatchKey]:scope.key});
+}
+async function liveChatManagement(tabId,chatId){
+ const scope=await liveChatScope(tabId,chatId);
+ const data=await chrome.storage.local.get([liveBatchKey,liveLastBatchKey,liveSeenKey]);
+ const all=data[liveBatchKey]||{};
+ const seen=data[liveSeenKey]||{};
+ // The popup may have used a different selected or channel-routed chat ID.
+ // Prefer the last capture of the same YouTube video over an unrelated empty scope.
+ let key=scope.key;
+ if(!all[key]){
+   const sameVideo=Object.entries(all).filter(([,entry])=>entry?.scope?.videoId===scope.videoId);
+   sameVideo.sort((x,y)=>(y[1].summary?.time||0)-(x[1].summary?.time||0));
+   if(sameVideo.length)key=sameVideo[0][0];
+ }
+ // Last completed/captured batch is authoritative when the management page opens
+ // from a different YouTube tab than the one used to translate.
+ if(!all[key] && data[liveLastBatchKey] && all[data[liveLastBatchKey]])key=data[liveLastBatchKey];
+ const batch=all[key]||null;
+ const displayScope=batch?.scope ? {...batch.scope,key} : scope;
+ return {ok:true,scope:displayScope,batch,seenCount:(seen[key]||[]).length,matchedCurrentVideo:displayScope.videoId===scope.videoId};
+}
+// Historical scopes are identified by the original videoId::chatId key. Never infer
+// a destructive target from the currently active YouTube tab.
+async function listLiveChatRecords(){
+ const data=await chrome.storage.local.get([liveBatchKey,liveSeenKey,liveLastBatchKey]);
+ const batches=data[liveBatchKey]||{},seen=data[liveSeenKey]||{};
+ const chats=await getChats();const names=new Map(chats.map(c=>[c.id,c.syncedTitle||c.label||c.id]));
+ const keys=[...new Set([...Object.keys(batches),...Object.keys(seen)])];
+ const records=keys.map(key=>{
+  const batch=batches[key]||null;
+  const split=key.lastIndexOf('::');
+  const videoId=batch?.scope?.videoId||(split>=0?key.slice(0,split):key);
+  const chatId=batch?.scope?.chatId||(split>=0?key.slice(split+2):'');
+  const title=batch?.scope?.title||'舊版直播紀錄（無標題）';
+  return {key,videoId,chatId,title,chatTitle:names.get(chatId)||'未命名／已移除的 ChatGPT 聊天室',seenCount:Array.isArray(seen[key])?seen[key].length:0,hasBatch:!!batch,time:batch?.summary?.time||0};
+ }).sort((a,b)=>b.time-a.time||a.title.localeCompare(b.title));
+ return {ok:true,records,lastKey:data[liveLastBatchKey]||''};
+}
+async function getLiveChatRecord(key){
+ if(typeof key!=='string'||!key)throw Error('請先選擇一筆直播紀錄。');
+ const data=await chrome.storage.local.get([liveBatchKey,liveSeenKey]);
+ const batch=(data[liveBatchKey]||{})[key]||null;
+ const history=(data[liveSeenKey]||{})[key]||[];
+ if(!batch&&!history.length)throw Error('這筆紀錄不存在或已被清除，請重新整理。');
+ const chats=await getChats();
+ const chatId=batch?.scope?.chatId||key.split('::').at(-1);
+ const chatTitle=chats.find(c=>c.id===chatId)?.syncedTitle||chats.find(c=>c.id===chatId)?.label||'未命名／已移除的 ChatGPT 聊天室';
+ return {ok:true,key,batch,seenCount:history.length,chatTitle};
+}
+async function resetLiveChatDedupeSelected(key,expectedCount){
+ const data=await chrome.storage.local.get([liveBatchKey,liveSeenKey]);
+ const seen=data[liveSeenKey]||{},batches=data[liveBatchKey]||{};
+ const arr=seen[key];
+ if(typeof key!=='string'||!Array.isArray(arr)||!arr.length)throw Error('這筆直播已沒有可重設的去重紀錄。');
+ if(!Number.isSafeInteger(expectedCount)||expectedCount!==arr.length)throw Error('去重筆數已變更，請重新整理並重新確認。');
+ delete seen[key];
+ const updates={[liveSeenKey]:seen};
+ if(batches[key]){batches[key].resetAt=Date.now();updates[liveBatchKey]=batches;}
+ await chrome.storage.local.set(updates);
+ return {ok:true,cleared:expectedCount};
+}
+async function clearLiveChatBatchSelected(key){
+ const data=await chrome.storage.local.get([liveBatchKey,liveLastBatchKey]);
+ const batches=data[liveBatchKey]||{};
+ if(typeof key!=='string'||!batches[key])throw Error('這筆直播沒有可清除的擷取明細。');
+ delete batches[key];
+ const updates={[liveBatchKey]:batches};
+ if(data[liveLastBatchKey]===key){
+  const last=Object.entries(batches).sort((a,b)=>(b[1].summary?.time||0)-(a[1].summary?.time||0))[0];
+  updates[liveLastBatchKey]=last?.[0]||'';
+ }
+ await chrome.storage.local.set(updates);
+ return {ok:true};
+}
 async function sendLiveChatToGpt(tabId,chatId,limit=15){
  if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('直播聊天室訊息數量必須是 1～100 的整數。');
  if(queuedCount||activeTransferId)throw Error('目前正在傳送錄音，請完成後再翻譯聊天室訊息。');
@@ -452,23 +575,27 @@ async function sendLiveChatToGpt(tabId,chatId,limit=15){
  if(!/^https:\/\/(www\.|m\.)?youtube\.com\//.test(tab.url||''))throw Error('請先切換到 YouTube 直播頁面。');
  const msgs=await readRecentLiveChat(tabId,limit);
  if(!msgs.length)throw Error('無法讀取直播聊天室訊息。請確認聊天室已展開。');
- // Dedupe per video and destination chat; independent from previous versions' saved settings.
- const videoId=new URL(tab.url).searchParams.get('v') || new URL(tab.url).pathname;
- const routeChannelForDedupe=await detectYouTubeChannel(tabId).catch(()=>null);
- const resolvedForDedupe=await resolveChannelChat(routeChannelForDedupe);
- const key=videoId+'::'+(resolvedForDedupe||chatId||'selected');
+ // Keep the scope compatible with v1.34.0 deduplication history.
+ const scope=await liveChatScope(tabId,chatId);
+ const key=scope.key;
  const store=(await chrome.storage.local.get(liveSeenKey))[liveSeenKey]||{};
  const history=store[key]||[];const seen=new Set(history);
- // Distinguish repeated identical messages only when YouTube supplies a stable message ID.
  const fingerprints=msgs.map(m=>m.messageId?'id:'+m.messageId:'text:'+m.author+'\u241f'+m.text);
  const fresh=msgs.filter((m,i)=>!seen.has(fingerprints[i]));
- if(!fresh.length){await logEvent('LIVE_CHAT_DEDUPE','no new messages',{count:msgs.length,key});return {ok:true,count:0,skipped:msgs.length,message:'最新 '+msgs.length+' 則訊息都已送過，沒有新訊息。'};}
- const prompt='請將以下 YouTube 直播聊天室最新 '+fresh.length+' 則訊息完整翻譯為臺灣使用的正體中文。保留發言者名稱及每則訊息的順序，保留語氣、玩笑、表情符號與專有名詞；已經是中文的內容可保留原文。不要只做摘要。\n\n'+fresh.map((m,i)=>`${i+1}. ${m.author}：${m.text}`).join('\n');
+ const rows=msgs.map((m,i)=>({...m,status:seen.has(fingerprints[i])?'skipped':'pending'}));
+ await saveLiveBatch(scope,rows,{captured:msgs.length,skipped:msgs.length-fresh.length,sent:0,result:'pending'});
+ if(!fresh.length){
+   await saveLiveBatch(scope,rows,{captured:msgs.length,skipped:msgs.length,sent:0,result:'all-skipped'});
+   await logEvent('LIVE_CHAT_DEDUPE','no new messages',{count:msgs.length,key});
+   return {ok:true,count:0,skipped:msgs.length,message:'最新 '+msgs.length+' 則訊息都已送過，沒有新訊息。'};
+ }
+ const prompt='請將以下 YouTube 直播聊天室最新 '+fresh.length+' 則訊息，依照原始順序完整翻譯成臺灣使用的正體中文。\n\n翻譯要求：\n1. 保留每則訊息的發言者名稱、順序、表情符號、顏文字及原本語氣，不要只提供摘要，也不要任意省略內容。\n2. 使用自然、符合臺灣習慣的口語表達，適當呈現觀眾之間的互動、玩笑、吐槽、驚訝與情緒。\n3. 人名、暱稱、遊戲、歌曲及其他專有名詞盡量保留原文，必要時補充中文意思；已經是中文的內容可以保留原文。\n4. 遇到較難理解的單字、慣用語、網路流行語、俚語、諧音梗或日本文化背景時，請依照聊天語境提供簡短且實用的補充說明，幫助理解真正的含意。\n5. 需要補充的說明請放在對應訊息的翻譯下方，或以簡短括號標示；一般容易理解的內容不必額外解釋，避免過度註解影響閱讀流暢度。\n6. 如果訊息需要參考前後文才能理解，請適度結合相鄰訊息判斷語意；若仍無法確定，請保留原文並簡短標示，不要自行編造意思。\n\n請直接依序提供完整翻譯，必要時附上簡短補充說明。\n\n'+fresh.map((m,i)=>`${i+1}. ${m.author}：${m.text}`).join('\n');
  if(prompt.length>18000)throw Error('聊天室訊息過長，已取消傳送。');
  const routeChannel=await detectYouTubeChannel(tabId).catch(()=>null);
  const routedChatId=await resolveChannelChat(routeChannel);
  const finalChatId=routedChatId||chatId||null;
- const target=await acquireDedicatedTab(finalChatId);await connectChatScript(target.id);await preflightChat(target.id);
+ try {
+  const target=await acquireDedicatedTab(finalChatId);await connectChatScript(target.id);await preflightChat(target.id);
  const id=crypto.randomUUID();
  // Text tasks report the result later. Track status before considering the batch processed.
  const result=await new Promise(async(resolve,reject)=>{
@@ -483,8 +610,13 @@ async function sendLiveChatToGpt(tabId,chatId,limit=15){
  // Bound storage growth across channels. Do not alter existing application storage keys.
  const keys=Object.keys(store);if(keys.length>80)for(const k of keys.slice(0,keys.length-80))delete store[k];
  await chrome.storage.local.set({[liveSeenKey]:store});
+ await saveLiveBatch(scope,rows.map(r=>({...r,status:r.status==='pending'?'sent':r.status})),{captured:msgs.length,skipped:msgs.length-fresh.length,sent:fresh.length,result:'sent'});
  await logEvent('LIVE_CHAT_DEDUPE','sent new messages',{newCount:fresh.length,skipped:msgs.length-fresh.length,key});
  return {ok:true,count:fresh.length,skipped:msgs.length-fresh.length};
+ } catch(e){
+   await saveLiveBatch(scope,rows.map(r=>({...r,status:r.status==='pending'?'failed':r.status,reason:r.status==='pending'?String(e.message||e):''})),{captured:msgs.length,skipped:msgs.length-fresh.length,sent:0,result:'failed',error:String(e.message||e)});
+   throw e;
+ }
 }
 
 async function completeRecording(info) {
@@ -522,6 +654,11 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
   (async()=>{
     switch(m.type) {
       case 'TRANSLATE_LIVE_CHAT': return await sendLiveChatToGpt(m.tabId,m.chatId,m.limit===undefined?15:m.limit);
+      case 'LIVE_CHAT_MANAGEMENT': return await liveChatManagement(m.tabId,m.chatId);
+      case 'LIST_LIVE_CHAT_RECORDS': return await listLiveChatRecords();
+      case 'GET_LIVE_CHAT_RECORD': return await getLiveChatRecord(m.key);
+      case 'RESET_LIVE_CHAT_DEDUPE_SELECTED': return await resetLiveChatDedupeSelected(m.key,m.expectedCount);
+      case 'CLEAR_LIVE_CHAT_BATCH_SELECTED': return await clearLiveChatBatchSelected(m.key);
       case 'RECORDING_SAVED': await completeRecording(m); return {ok:true};
       case 'RECORDING_ERROR': await logEvent('REC_ERROR',m.error||'unknown'); await setState({phase:'error',error:m.error}); await notify('錄音失敗',m.error); return {ok:true};
       case 'CHAT_CONVERSATION_URL': {

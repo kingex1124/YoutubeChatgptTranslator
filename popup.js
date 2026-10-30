@@ -39,7 +39,7 @@ async function syncTitles(){
    const result=await call({type:'SYNC_CHAT_TITLES'});
    if(!result?.ok)throw new Error(result?.error||'同步失敗');
    await refresh();
-   $('syncStatus').textContent=result.reason||`找到 ${result.matched} / ${result.total} 個聊天標題，更新 ${result.updated} 個。未載入的聊天保留原名稱。`;
+   $('syncStatus').textContent=result.reason||`找到 ${result.matched} / ${result.total} 個聊天標題，更新 ${result.updated} 個（直接讀取已開啟對話 ${result.active||0} 個）。${result.missing?'未找到的聊天室請先開啟對話分頁再同步。':'標題已同步。'}`;
  }catch(e){$('syncStatus').textContent='標題同步失敗：'+e.message;}
  finally{b.disabled=false;}
 }
@@ -125,13 +125,13 @@ const chatLimitKey='liveChatTranslateLimitV133';
 function validChatLimit(value){const number=Number(value);return Number.isInteger(number)&&number>=1&&number<=100?number:null;}
 async function updateChatLimit(){
  const n=validChatLimit($('chatLimit').value);
- $('translateChat').textContent=`翻譯直播聊天室最新 ${n??15} 則`;
+ $('translateChat').textContent=`翻譯聊天室 ${n??15} 則`;
  if(n!==null)await chrome.storage.local.set({[chatLimitKey]:n});
 }
 chrome.storage.local.get(chatLimitKey).then(r=>{
  const n=validChatLimit(r[chatLimitKey])??15;
  $('chatLimit').value=String(n);
- $('translateChat').textContent=`翻譯直播聊天室最新 ${n} 則`;
+ $('translateChat').textContent=`翻譯聊天室 ${n} 則`;
 });
 $('chatLimit').addEventListener('change',()=>updateChatLimit().catch(e=>error(e.message)));
 $('translateChat').onclick=async()=>{
@@ -165,3 +165,5 @@ $('saveChannel').onclick=async()=>{
  if(!detectedChannel){$('channelInfo').textContent='請先偵測 YouTube 頻道。';return;}
  try{const r=await call({type:'SET_CHANNEL_BINDING',channelKey:detectedChannel.key,chatId:$('channelChat').value});if(!r?.ok)throw Error(r.error);$('channelInfo').textContent=`${detectedChannel.label}：已儲存頻道設定。`;}catch(e){$('channelInfo').textContent=e.message;}
 };
+
+$('chatDedupeManage').onclick=()=>chrome.tabs.create({url:chrome.runtime.getURL('live-chat-history.html')});
